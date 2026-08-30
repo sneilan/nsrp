@@ -1,0 +1,5 @@
+# We don't want to save the binary to Git
+nrsp.exe
+nsrp
+src/nsrp.exe
+src/nsrp

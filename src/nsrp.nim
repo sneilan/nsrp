@@ -1,5 +1,5 @@
 const
-  pkgTitle*       = "nsrp"
+  pkgTitle*       = "nsrp: Nim Steam Review Parser"
   pkgVersion*     = "2026.08.30.1"
   pkgAuthor*      = "Michael Adams, unquietwiki@gmail.com"
   pkgDescription* = "Download Steam(TM) game reviews into three different formats"
@@ -10,7 +10,7 @@ import std/[dirs, httpclient, json, net, os, parseopt, strscans, strutils, uri]
 # Global variables
 var
   reviewLimit: int = 0
-  dataDirectory: string = "data"
+  dataDirectory: string = "."
 
 # Claude-generated function to isolate a substring
 proc nchars(input: string; strVal: var string; start: int; n: int): int =
@@ -22,20 +22,18 @@ proc nchars(input: string; strVal: var string; start: int; n: int): int =
 
 # Make sure data directory exists
 proc prepareDataDir(dirData: string) =
-  if(not dirExists(dirData)):
-    createDir(dirData)
+  if(dirData != "."):
+    if(not dirExists(dirData)):
+      createDir(dirData)
 
 # Grab JSON fragment from API
-proc grabAPIData(steamid: int, cursor: string): string =  
+proc grabAPIData(steamid: int, cursor: string, numPerPage: int = 100): string =  
   var
     client = newHttpClient()
     rawData: string = ""
-    num_per_page: int = 100
   try:
     echo "Using cursor: " & cursor
-    if((reviewLimit > 0) and (num_per_page > reviewLimit)):
-        num_per_page = reviewLimit
-    var requestValues: string = "json=1&filter=updated&purchase_type=all&language=all&filter_offtopic_activity=1&num_per_page=" & intToStr(num_per_page) & "&cursor=" & encodeUrl(cursor)
+    var requestValues: string = "json=1&filter=updated&purchase_type=all&language=all&filter_offtopic_activity=1&num_per_page=" & intToStr(numPerPage) & "&cursor=" & encodeUrl(cursor)
     var url: string = "https://store.steampowered.com/appreviews/" & intToStr(steamid) & "?" & requestValues
     var response = client.get(url)
     rawData = response.body
@@ -45,8 +43,8 @@ proc grabAPIData(steamid: int, cursor: string): string =
     client.close()
     return rawData
 
-# Grab initial data
-proc grabData(steamid: int): (JsonNode, string) =
+# Grab initial data and return as a JSON Object
+proc grabData(steamid: int): (JsonNode) =
   var
     newData: string = ""
     rawData: string = ""
@@ -55,44 +53,66 @@ proc grabData(steamid: int): (JsonNode, string) =
     oldcursor: string = ""
     arrayOfJSON = newJArray()
     newJSON = newJObject()
+    totalFetched: int = 0
   try:
-    # Okay... so, we're gonna grab the data, see if we're asking for less than 100 records,
-    # and then otherwise chain the cursor to load all the records.
+    # Okay... so, we're gonna grab the data, shrinking each request to only ask
+    # for as many records as we still need (capped at 100 per page), and chain
+    # the cursor until we hit the limit or run out of new pages.
     echo "Retrieving data ..."
     while (true):
-      newData = grabAPIData(steamid,cursor)
-      arrayOfJSON.add(parseJson(newData))
-      if (reviewLimit > 0 and reviewLimit <= 100):
+      var numPerPage = 100
+      if reviewLimit > 0:
+        let remaining = reviewLimit - totalFetched
+        if remaining <= 0:
+          break
+        numPerPage = min(100, remaining)
+      newData = grabAPIData(steamid, cursor, numPerPage)
+      let pageJSON = parseJson(newData)
+      arrayOfJSON.add(pageJSON)
+      var pageCount = 0
+      if pageJSON.contains("reviews"):
+        pageCount = pageJSON["reviews"].len
+        totalFetched += pageCount
+      echo "Page returned " & intToStr(pageCount) & " reviews (requested " & intToStr(numPerPage) & ")"
+      if (reviewLimit > 0 and totalFetched >= reviewLimit):
         break
+      if pageCount < numPerPage:
+        break # Steam gave back fewer than we asked for; no more data to page through
       if scanf(newData, "$*\"cursor\":$s\"${nchars(20)}\"", skip, cursor):
         if (cursor == oldcursor):
           break
         echo "More records found: " & cursor
         rawData &= newData
         oldcursor = cursor
+      else:
+        break # no cursor in the response; stop instead of re-requesting forever
     echo "Data pages loaded: " & intToStr(arrayOfJSON.len)
 
     # Verify data is valid before proceeding to build out new, cleaner JSON to use
     if(arrayOfJSON[0].contains("query_summary") and arrayOfJSON[0].contains("reviews")):
       newJSON.add("query_summary", arrayOfJSON[0]["query_summary"])
       newJSON.add("reviews", newJArray())
+      var added = 0
       for i in 0 ..< arrayOfJSON.len:
         for j in 0 ..< arrayOfJSON[i]["reviews"].len:
+          if (reviewLimit > 0 and added >= reviewLimit):
+            break
           newJSON["reviews"].add(arrayOfJSON[i]["reviews"][j])
+          inc added
     
   except:
     echo "Could not process JSON data"
   finally:
-    return (newJSON, pretty(newJSON))
+    return (newJSON)
 
 # Write out help if no valid input is given
 proc writeHelp() =
   echo "=============================================================="
-  echo pkgTitle, ": ", pkgVersion
+  echo pkgTitle, "; ", pkgVersion
   echo pkgAuthor
   echo pkgDescription
   echo ""
-  echo "Add a review limit: nsrp -l:REVEWLIMIT (subsequent command)"
+  echo "Add a review limit: nsrp -n:REVEWLIMIT (subsequent command)"
   echo "Specify output dir: nsrp -d:DIRECTORY  (subsequent command)"
   echo "JSON:               nsrp -j:STEAMID"
   echo "Markdown:           nsrp -m:STEAMID"
@@ -111,7 +131,7 @@ for kind, key, val in getopt():
       except ValueError:
         echo "Incorrect directory specified"
         quit(1)
-    of "l":
+    of "n":
       try:
         reviewLimit = parseInt(val)
         echo "Limiting to the latest ", reviewLimit, " reviews ..."
@@ -121,7 +141,7 @@ for kind, key, val in getopt():
     of "m":
       try:
         var steamid = parseInt(val)
-        echo "Outputting Markdown for SteamID ", steamid
+        echo "Outputting Markdown for SteamID (TO BE COMPLETED) ", steamid
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
@@ -129,7 +149,7 @@ for kind, key, val in getopt():
     of "h":
       try:
         var steamid = parseInt(val)
-        echo "Outputting HTML for SteamID ", steamid
+        echo "Outputting HTML for SteamID (TO BE COMPLETED) ", steamid
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
@@ -140,7 +160,7 @@ for kind, key, val in getopt():
         echo "Outputting JSON for SteamID ", steamid
         var data = grabData(steamid)
         prepareDataDir(dataDirectory)
-        writeFile(joinPath(dataDirectory,intToStr(steamid) & "_review.json"),data[1])
+        writeFile(joinPath(dataDirectory,intToStr(steamid) & "_review.json"),pretty(data))
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
