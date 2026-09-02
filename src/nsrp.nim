@@ -1,16 +1,18 @@
 const
   pkgTitle*       = "nsrp: Nim Steam Review Parser"
-  pkgVersion*     = "2026.08.30.1"
+  pkgVersion*     = "2026.09.02.1"
   pkgAuthor*      = "Michael Adams, unquietwiki@gmail.com"
   pkgDescription* = "Download Steam(TM) game reviews into three different formats"
 
 # Libraries
-import std/[dirs, httpclient, json, net, os, parseopt, strscans, strutils, uri]
+import std/[httpclient, json, net, os, parseopt, streams, strscans, strutils, times, uri]
 
 # Global variables
 var
   reviewLimit: int = 0
   dataDirectory: string = "."
+let
+  timeIsNow = now().utc
 
 # Claude-generated function to isolate a substring
 proc nchars(input: string; strVal: var string; start: int; n: int): int =
@@ -105,6 +107,63 @@ proc grabData(steamid: int): (JsonNode) =
   finally:
     return (newJSON)
 
+# Generate Markdown format of JSON data
+proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
+  var streamMD = newFileStream(filename, fmWrite)
+  if not isNil(streamMD):    
+    # Header & summary
+    streamMD.writeLine("# Steam Reviews of INSERT TITLE")
+    streamMD.writeLine("## Summary")
+    streamMD.writeLine("- **DateTime of Report (UTC):** " & $timeIsNow)
+    streamMD.writeLine("- **Total Reviews:** " & intToStr(jsonData["query_summary"]["total_reviews"].getInt()))
+    streamMD.writeLine("- **Positive Reviews:** " & intToStr(jsonData["query_summary"]["total_positive"].getInt()))
+    streamMD.writeLine("- **Negative Reviews:** " & intToStr(jsonData["query_summary"]["total_negative"].getInt()))
+    streamMD.writeLine("- **Overall Sentiment:** " & jsonData["query_summary"]["review_score_desc"].getStr())
+    streamMD.writeLine("## Reviews")
+    streamMD.flush()
+    # Cycle through reviews
+    for i in 0 ..< jsonData["reviews"].len:
+      let activeRow = jsonData["reviews"][i]
+      streamMD.writeLine("### Review by: [" & activeRow["author"]["personaname"].getStr() & "](" & activeRow["author"]["profile_url"].getStr()  & ")")
+      streamMD.writeLine()
+      # Stats
+      streamMD.writeLine("**Last updated (UTC):** _" & $fromUnix(activeRow["timestamp_updated"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
+      streamMD.writeLine()
+      streamMD.write("**Total user reviews made:** _" & intToStr(activeRow["author"]["num_reviews"].getInt()) & "_")
+      streamMD.write("\t\t **Playtime:** _" & intToStr(activeRow["author"]["playtime_forever"].getInt()) & " minutes_")
+      # Booleans
+      if(activeRow["refunded"].getBool()):
+        streamMD.write("     **REFUNDED**")
+      if(activeRow["received_for_free"].getBool()):
+        streamMD.write("     **RECEIVED FOR FREE**")
+      streamMD.writeLine()
+      streamMD.writeLine()
+      # System specs: note that VRAM is an Int, but others are strings, and CPU string has to be "stripped".
+      try:
+        if(activeRow.contains("hardware")):
+          streamMD.writeLine("**CPU:** _" & activeRow["hardware"]["cpu_name"].getStr().strip() & "_" &
+          "; **Video Card:** _" & activeRow["hardware"]["adapter_description"].getStr() & "_" &
+          "; **VRAM (MB):** _" & intToStr(activeRow["hardware"]["vram_size"].getInt()) & "_" &
+          "; **System RAM (MB):** _" & activeRow["hardware"]["system_ram"].getStr() & "_" &
+          "; **OS:** _" & activeRow["hardware"]["os"].getStr() & "_")
+        else:
+          streamMD.writeLine("_No system specs provided_")
+      except:
+        streamMD.writeLine("_No system specs provided_")      
+      # Write out actual review
+      if activeRow["voted_up"].getBool():
+        streamMD.writeLine("#### Positive Review ")
+      else:
+        streamMD.writeLine("#### Negative Review ")
+      streamMD.writeLine(activeRow["review"].getStr())
+      streamMD.writeLine()
+      streamMD.writeLine()
+      streamMD.flush()
+    # Close file
+    streamMD.close()
+  echo "Parsing JSON into usable Markdown"  
+  return true
+
 # Write out help if no valid input is given
 proc writeHelp() =
   echo "=============================================================="
@@ -141,7 +200,14 @@ for kind, key, val in getopt():
     of "m":
       try:
         var steamid = parseInt(val)
-        echo "Outputting Markdown for SteamID (TO BE COMPLETED) ", steamid
+        echo "Outputting Markdown for SteamID ", steamid
+        var data = grabData(steamid)        
+        prepareDataDir(dataDirectory)
+        let filenameMD = os.joinPath(dataDirectory,intToStr(steamid) & "_review.md")
+        if(makeMarkdown(data, filenameMD)):
+          echo "Markdown generated: please review " & filenameMD
+        else:
+          echo "Failed to produce Markdown"
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"

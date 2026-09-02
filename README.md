@@ -1,15 +1,22 @@
 # nsrp: "Nim Steam Review Parser"
 
-_nsrp_ is a Steam(TM) game review downloader, that outputs in Markdown, HTML, or JSON; for either casual reading, or consumption by an LLM for analysis. It is heavily inspired by Wok's [steamreviews](https://github.com/woctezuma/download-steam-reviews) package for Python.
+_nsrp_ is a Steam(TM) game review downloader, that outputs in Markdown, HTML, or JSON; for either casual reading, or consumption by an LLM for analysis.
 
 ## Examples
 
-_Currently, only JSON output works_
+_HTML output not yet supported!_
 
 - nsrp -n:50 -m:1459560 -> generates 1459560_review.md for "Untitled Space Game", newest 50 responses
 - nsrp -d:"cs2data" -h:730 -> generates 730_review.html for "Counter-Strike 2", and saves it in "cs2data" subfolder
 - nsrp -j:1454400 -> generates 1454400_review.json for "Cookie Clicker"
 
+## References
+
+- https://partner.steamgames.com/doc/store/getreviews -> API documentation
+- https://github.com/woctezuma/download-steam-reviews -> Inspired this application
+- https://www.markdownguide.org/ -> Markdown documentation
+
 ## Changelog
 
+- 2026.09.02.1 -> Added Markdown output (missing game title JSON pull)
 - 2026.08.30.1 -> First release: JSON-only
