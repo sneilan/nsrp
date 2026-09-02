@@ -18,5 +18,5 @@ _HTML output not yet supported!_
 
 ## Changelog
 
-- 2026.09.02.1 -> Added Markdown output (missing game title JSON pull)
+- 2026.09.02.2 -> Added Markdown output (missing game title JSON pull)
 - 2026.08.30.1 -> First release: JSON-only

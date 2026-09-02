@@ -1,6 +1,6 @@
 const
   pkgTitle*       = "nsrp: Nim Steam Review Parser"
-  pkgVersion*     = "2026.09.02.1"
+  pkgVersion*     = "2026.09.02.2"
   pkgAuthor*      = "Michael Adams, unquietwiki@gmail.com"
   pkgDescription* = "Download Steam(TM) game reviews into three different formats"
 
@@ -35,9 +35,10 @@ proc grabAPIData(steamid: int, cursor: string, numPerPage: int = 100): string =
     rawData: string = ""
   try:
     echo "Using cursor: " & cursor
-    var requestValues: string = "json=1&filter=updated&purchase_type=all&language=all&filter_offtopic_activity=1&num_per_page=" & intToStr(numPerPage) & "&cursor=" & encodeUrl(cursor)
-    var url: string = "https://store.steampowered.com/appreviews/" & intToStr(steamid) & "?" & requestValues
-    var response = client.get(url)
+    let
+      requestValues: string = "json=1&filter=updated&purchase_type=all&language=all&filter_offtopic_activity=1&num_per_page=" & $numPerPage & "&cursor=" & encodeUrl(cursor)
+      url: string = "https://store.steampowered.com/appreviews/" & $steamid & "?" & requestValues
+      response = client.get(url)
     rawData = response.body
   except:
     echo "Could not retrieve JSON data from Steam"
@@ -75,7 +76,7 @@ proc grabData(steamid: int): (JsonNode) =
       if pageJSON.contains("reviews"):
         pageCount = pageJSON["reviews"].len
         totalFetched += pageCount
-      echo "Page returned " & intToStr(pageCount) & " reviews (requested " & intToStr(numPerPage) & ")"
+      echo "Page returned " & $pageCount & " reviews (requested " & $numPerPage & ")"
       if (reviewLimit > 0 and totalFetched >= reviewLimit):
         break
       if pageCount < numPerPage:
@@ -88,7 +89,7 @@ proc grabData(steamid: int): (JsonNode) =
         oldcursor = cursor
       else:
         break # no cursor in the response; stop instead of re-requesting forever
-    echo "Data pages loaded: " & intToStr(arrayOfJSON.len)
+    echo "Data pages loaded: " & $arrayOfJSON.len
 
     # Verify data is valid before proceeding to build out new, cleaner JSON to use
     if(arrayOfJSON[0].contains("query_summary") and arrayOfJSON[0].contains("reviews")):
@@ -115,22 +116,28 @@ proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
     streamMD.writeLine("# Steam Reviews of INSERT TITLE")
     streamMD.writeLine("## Summary")
     streamMD.writeLine("- **DateTime of Report (UTC):** " & $timeIsNow)
-    streamMD.writeLine("- **Total Reviews:** " & intToStr(jsonData["query_summary"]["total_reviews"].getInt()))
-    streamMD.writeLine("- **Positive Reviews:** " & intToStr(jsonData["query_summary"]["total_positive"].getInt()))
-    streamMD.writeLine("- **Negative Reviews:** " & intToStr(jsonData["query_summary"]["total_negative"].getInt()))
+    streamMD.writeLine("- **Total Reviews:** " & $jsonData["query_summary"]["total_reviews"].getInt())
+    streamMD.writeLine("- **Positive Reviews:** " & $jsonData["query_summary"]["total_positive"].getInt())
+    streamMD.writeLine("- **Negative Reviews:** " & $jsonData["query_summary"]["total_negative"].getInt())
     streamMD.writeLine("- **Overall Sentiment:** " & jsonData["query_summary"]["review_score_desc"].getStr())
     streamMD.writeLine("## Reviews")
     streamMD.flush()
     # Cycle through reviews
     for i in 0 ..< jsonData["reviews"].len:
-      let activeRow = jsonData["reviews"][i]
-      streamMD.writeLine("### Review by: [" & activeRow["author"]["personaname"].getStr() & "](" & activeRow["author"]["profile_url"].getStr()  & ")")
+      let
+        activeRow = jsonData["reviews"][i]
+        playtimeHrs = activeRow["author"]["playtime_forever"].getInt() / 60
+      streamMD.writeLine("### Review by: [" & activeRow["author"]["personaname"].getStr() &
+        "](" & activeRow["author"]["profile_url"].getStr() & ")")
       streamMD.writeLine()
       # Stats
-      streamMD.writeLine("**Last updated (UTC):** _" & $fromUnix(activeRow["timestamp_updated"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
+      if(activeRow["timestamp_updated"].getInt() != activeRow["timestamp_created"].getInt()):
+        streamMD.writeLine("**Updated review (UTC):** _" & $fromUnix(activeRow["timestamp_updated"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
+      else:
+        streamMD.writeLine("**Reviewed (UTC):** _" & $fromUnix(activeRow["timestamp_created"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
       streamMD.writeLine()
-      streamMD.write("**Total user reviews made:** _" & intToStr(activeRow["author"]["num_reviews"].getInt()) & "_")
-      streamMD.write("\t\t **Playtime:** _" & intToStr(activeRow["author"]["playtime_forever"].getInt()) & " minutes_")
+      streamMD.write("**Total user reviews made:** _" & $activeRow["author"]["num_reviews"].getInt() & "_")
+      streamMD.write("\t\t **Playtime:** _" & playtimeHrs.formatFloat(ffDecimal, 2) & " hours_")
       # Booleans
       if(activeRow["refunded"].getBool()):
         streamMD.write("     **REFUNDED**")
@@ -142,20 +149,23 @@ proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
       try:
         if(activeRow.contains("hardware")):
           streamMD.writeLine("**CPU:** _" & activeRow["hardware"]["cpu_name"].getStr().strip() & "_" &
-          "; **Video Card:** _" & activeRow["hardware"]["adapter_description"].getStr() & "_" &
-          "; **VRAM (MB):** _" & intToStr(activeRow["hardware"]["vram_size"].getInt()) & "_" &
-          "; **System RAM (MB):** _" & activeRow["hardware"]["system_ram"].getStr() & "_" &
-          "; **OS:** _" & activeRow["hardware"]["os"].getStr() & "_")
+            "; **Video Card:** _" & activeRow["hardware"]["adapter_description"].getStr() & "_" &
+            "; **VRAM (MB):** _" & $activeRow["hardware"]["vram_size"].getInt() & "_" &
+            "; **System RAM (MB):** _" & activeRow["hardware"]["system_ram"].getStr() & "_" &
+            "; **OS:** _" & activeRow["hardware"]["os"].getStr() & "_")
         else:
           streamMD.writeLine("_No system specs provided_")
       except:
-        streamMD.writeLine("_No system specs provided_")      
+        streamMD.writeLine("_No system specs provided_")
       # Write out actual review
       if activeRow["voted_up"].getBool():
         streamMD.writeLine("#### Positive Review ")
       else:
         streamMD.writeLine("#### Negative Review ")
-      streamMD.writeLine(activeRow["review"].getStr())
+      let reviewText = activeRow["review"].getStr()
+      streamMD.writeLine("```")
+      streamMD.writeLine(reviewText)
+      streamMD.writeLine("```")
       streamMD.writeLine()
       streamMD.writeLine()
       streamMD.flush()
@@ -203,7 +213,7 @@ for kind, key, val in getopt():
         echo "Outputting Markdown for SteamID ", steamid
         var data = grabData(steamid)        
         prepareDataDir(dataDirectory)
-        let filenameMD = os.joinPath(dataDirectory,intToStr(steamid) & "_review.md")
+        let filenameMD = os.joinPath(dataDirectory, $steamid & "_review.md")
         if(makeMarkdown(data, filenameMD)):
           echo "Markdown generated: please review " & filenameMD
         else:
@@ -226,7 +236,7 @@ for kind, key, val in getopt():
         echo "Outputting JSON for SteamID ", steamid
         var data = grabData(steamid)
         prepareDataDir(dataDirectory)
-        writeFile(joinPath(dataDirectory,intToStr(steamid) & "_review.json"),pretty(data))
+        writeFile(joinPath(dataDirectory, $steamid & "_review.json"),pretty(data))
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
