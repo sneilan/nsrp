@@ -1,6 +1,6 @@
 const
   pkgTitle*       = "nsrp: Nim Steam Review Parser"
-  pkgVersion*     = "2026.09.02.2"
+  pkgVersion*     = "2026.09.02.3"
   pkgAuthor*      = "Michael Adams, unquietwiki@gmail.com"
   pkgDescription* = "Download Steam(TM) game reviews into three different formats"
 
@@ -11,6 +11,7 @@ import std/[httpclient, json, net, os, parseopt, streams, strscans, strutils, ti
 var
   reviewLimit: int = 0
   dataDirectory: string = "."
+  steamid: int = 0
 let
   timeIsNow = now().utc
 
@@ -28,8 +29,27 @@ proc prepareDataDir(dirData: string) =
     if(not dirExists(dirData)):
       createDir(dirData)
 
+# Grab the name of the game/application from API
+proc grabTitleAndReleaseDate(): (string, string) =
+  var
+    client = newHttpClient()
+    title = "COULD NOT RETREIVE TITLE"
+    releaseDate = "UNRELEASED"
+  try:
+    let
+      url: string = "https://store.steampowered.com/api/appdetails" & "?appids=" & $steamid
+      response = client.get(url)
+      pageJSON = parseJson(response.body)
+    title = pageJSON{$steamid}{"data"}{"name"}.getStr()
+    releaseDate = pageJSON{$steamid}{"data"}{"release_date"}{"date"}.getStr()
+  except:
+    echo "Could not retrieve JSON appdetails data from Steam"
+  finally:
+    client.close()
+    return (title, releaseDate)
+
 # Grab JSON fragment from API
-proc grabAPIData(steamid: int, cursor: string, numPerPage: int = 100): string =  
+proc grabAPIData(cursor: string, numPerPage: int = 100): string =  
   var
     client = newHttpClient()
     rawData: string = ""
@@ -41,13 +61,13 @@ proc grabAPIData(steamid: int, cursor: string, numPerPage: int = 100): string =
       response = client.get(url)
     rawData = response.body
   except:
-    echo "Could not retrieve JSON data from Steam"
+    echo "Could not retrieve JSON appreviews data from Steam"
   finally:
     client.close()
     return rawData
 
 # Grab initial data and return as a JSON Object
-proc grabData(steamid: int): (JsonNode) =
+proc grabData(): (JsonNode) =
   var
     newData: string = ""
     rawData: string = ""
@@ -69,7 +89,7 @@ proc grabData(steamid: int): (JsonNode) =
         if remaining <= 0:
           break
         numPerPage = min(100, remaining)
-      newData = grabAPIData(steamid, cursor, numPerPage)
+      newData = grabAPIData(cursor, numPerPage)
       let pageJSON = parseJson(newData)
       arrayOfJSON.add(pageJSON)
       var pageCount = 0
@@ -108,19 +128,26 @@ proc grabData(steamid: int): (JsonNode) =
   finally:
     return (newJSON)
 
+# Build one row of a Markdown table from a list of cell contents
+proc mdTableRow(cells: seq[string]): string =
+  "| " & cells.join(" | ") & " |"
+
 # Generate Markdown format of JSON data
 proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
-  var streamMD = newFileStream(filename, fmWrite)
-  if not isNil(streamMD):    
+  var
+    titleAndRelease = grabTitleAndReleaseDate()
+    streamMD = newFileStream(filename, fmWrite)
+  if not isNil(streamMD):
     # Header & summary
-    streamMD.writeLine("# Steam Reviews of INSERT TITLE")
+    streamMD.writeLine("# Steam Reviews of " & titleAndRelease[0])
     streamMD.writeLine("## Summary")
-    streamMD.writeLine("- **DateTime of Report (UTC):** " & $timeIsNow)
+    streamMD.writeLine("- **DateTime of Report (UTC):** " & $timeIsNow.format("MMM dd, yyyy, HH:mm"))
+    streamMD.writeLine("- **Release Date:** " & titleAndRelease[1])
     streamMD.writeLine("- **Total Reviews:** " & $jsonData["query_summary"]["total_reviews"].getInt())
     streamMD.writeLine("- **Positive Reviews:** " & $jsonData["query_summary"]["total_positive"].getInt())
     streamMD.writeLine("- **Negative Reviews:** " & $jsonData["query_summary"]["total_negative"].getInt())
     streamMD.writeLine("- **Overall Sentiment:** " & jsonData["query_summary"]["review_score_desc"].getStr())
-    streamMD.writeLine("## Reviews")
+    streamMD.writeLine("## Latest " & $jsonData["reviews"].len & " Reviews")
     streamMD.flush()
     # Cycle through reviews
     for i in 0 ..< jsonData["reviews"].len:
@@ -135,15 +162,23 @@ proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
         streamMD.writeLine("**Updated review (UTC):** _" & $fromUnix(activeRow["timestamp_updated"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
       else:
         streamMD.writeLine("**Reviewed (UTC):** _" & $fromUnix(activeRow["timestamp_created"].getInt()).utc.format("yyyy-MM-dd HH:mm") & "_")
-      streamMD.writeLine()
-      streamMD.write("**Total user reviews made:** _" & $activeRow["author"]["num_reviews"].getInt() & "_")
-      streamMD.write("\t\t **Playtime:** _" & playtimeHrs.formatFloat(ffDecimal, 2) & " hours_")
-      # Booleans
-      if(activeRow["refunded"].getBool()):
-        streamMD.write("     **REFUNDED**")
-      if(activeRow["received_for_free"].getBool()):
-        streamMD.write("     **RECEIVED FOR FREE**")
-      streamMD.writeLine()
+      # Reviewer stats as a table with a blank header row: GFM tables require
+      # a header, but leaving the cells empty skips the bold title bar you'd
+      # get from a "real" header, while still lining the columns up cleanly.
+      var statCells: seq[string] = @[
+        "**Total user reviews made:** _" & $activeRow["author"]["num_reviews"].getInt() & "_",
+        "**Playtime:** _" & playtimeHrs.formatFloat(ffDecimal, 2) & " hours_"
+      ]
+      if activeRow["refunded"].getBool():
+        statCells.add("**REFUNDED**")
+      if activeRow["received_for_free"].getBool():
+        statCells.add("**RECEIVED FOR FREE**")
+      var sepCells = newSeq[string](statCells.len)
+      for idx in 0 ..< sepCells.len:
+        sepCells[idx] = "---"
+      streamMD.writeLine(mdTableRow(newSeq[string](statCells.len)))
+      streamMD.writeLine(mdTableRow(sepCells))
+      streamMD.writeLine(mdTableRow(statCells))
       streamMD.writeLine()
       # System specs: note that VRAM is an Int, but others are strings, and CPU string has to be "stripped".
       try:
@@ -209,9 +244,9 @@ for kind, key, val in getopt():
         quit(1)
     of "m":
       try:
-        var steamid = parseInt(val)
-        echo "Outputting Markdown for SteamID ", steamid
-        var data = grabData(steamid)        
+        steamid = parseInt(val)
+        echo "Outputting Markdown for SteamID ", $steamid
+        var data = grabData()
         prepareDataDir(dataDirectory)
         let filenameMD = os.joinPath(dataDirectory, $steamid & "_review.md")
         if(makeMarkdown(data, filenameMD)):
@@ -224,17 +259,17 @@ for kind, key, val in getopt():
         quit(1)
     of "h":
       try:
-        var steamid = parseInt(val)
-        echo "Outputting HTML for SteamID (TO BE COMPLETED) ", steamid
+        steamid = parseInt(val)
+        echo "Outputting HTML for SteamID (TO BE COMPLETED) ", $steamid
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
         quit(1)
     of "j":
       try:
-        var steamid = parseInt(val)
-        echo "Outputting JSON for SteamID ", steamid
-        var data = grabData(steamid)
+        steamid = parseInt(val)
+        echo "Outputting JSON for SteamID ", $steamid
+        var data = grabData()
         prepareDataDir(dataDirectory)
         writeFile(joinPath(dataDirectory, $steamid & "_review.json"),pretty(data))
         quit(0)

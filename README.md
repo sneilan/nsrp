@@ -16,7 +16,11 @@ _HTML output not yet supported!_
 - https://github.com/woctezuma/download-steam-reviews -> Inspired this application
 - https://www.markdownguide.org/ -> Markdown documentation
 
+## AI usage
+
+Anthropic Claude was used to supply minor changes and functions, and acted as a code review mechanism.
+
 ## Changelog
 
-- 2026.09.02.2 -> Added Markdown output (missing game title JSON pull)
+- 2026.09.02.3 -> Added Markdown output
 - 2026.08.30.1 -> First release: JSON-only
