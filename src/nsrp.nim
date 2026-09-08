@@ -1,11 +1,12 @@
 const
   pkgTitle*       = "nsrp: Nim Steam Review Parser"
-  pkgVersion*     = "2026.09.02.3"
+  pkgVersion*     = "2026.09.07.1"
   pkgAuthor*      = "Michael Adams, unquietwiki@gmail.com"
   pkgDescription* = "Download Steam(TM) game reviews into three different formats"
 
 # Libraries
-import std/[httpclient, json, net, os, parseopt, streams, strscans, strutils, times, uri]
+import std/[httpclient, json, net, os, parseopt, re, streams, strscans, strutils, times, uri]
+import markdown
 
 # Global variables
 var
@@ -209,6 +210,68 @@ proc makeMarkdown(jsonData: JsonNode, filename: string): (bool) =
   echo "Parsing JSON into usable Markdown"  
   return true
 
+let
+  # The "markdown" library doesn't render GFM pipe-tables, so the blank
+  # header/separator rows built by mdTableRow() survive as literal text.
+  # Strip that leftover syntax and replace it with a line break instead.
+  brokenTableHeaderPattern = re(r"\|(?:\s+\|)+\s*\n\|(?:\s*-{3,}\s*\|)+\s*\n")
+  # The remaining data row (e.g. "| **Total...** | **Playtime:**... |")
+  # still carries its pipe delimiters; this matches that row so its cells
+  # can be rejoined without them.
+  statRowPattern = re(r"<br>\n\|(.*?)\|(?=</p>|\n)")
+
+# Rejoins the cells of a leftover stats data row (see statRowPattern above)
+# with "; " instead of the unrendered Markdown pipe delimiters.
+proc cleanStatRowPipes(html: string): string =
+  result = html
+  var pos = 0
+  while true:
+    var caps = newSeq[string](1)
+    let bounds = findBounds(result, statRowPattern, caps, pos)
+    if bounds.first < 0:
+      break
+    var cleaned = "<br>\n"
+    let cells: seq[string] = caps[0].split(" | ")
+    for i, cell in cells:
+      if i > 0: cleaned.add("; ")
+      cleaned.add(cell.strip())
+    result = result[0 ..< bounds.first] & cleaned & result[bounds.last + 1 .. ^1]
+    pos = bounds.first + cleaned.len
+
+# Generate HTML file from converted Markdown
+proc makeHTML(filenameMD: string, filenameHTML: string): (bool) =
+  try:
+    let textMD = readFile(filenameMD)
+    let bodyHTML = markdown(textMD).replace(brokenTableHeaderPattern, "<br>\n").cleanStatRowPipes()
+    let textHTML = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n" &
+      "<meta charset=\"UTF-8\">\n" &
+      "<title>" & pkgTitle & "</title>\n" &
+      "<style>\n" &
+      "body {\n" &
+      "  font-family: Consolas, Monaco, 'Courier New', monospace;\n" &
+      "}\n" &
+      "pre {\n" &
+      "  white-space: pre-wrap;\n" &
+      "  background: #f4f4f4;\n" &
+      "  border-left: 4px solid #888;\n" &
+      "  border-radius: 4px;\n" &
+      "  padding: 0.75em 1em;\n" &
+      "  margin: 0.5em 0 1.5em;\n" &
+      "}\n" &
+      "pre code {\n" &
+      "  background: none;\n" &
+      "}\n" &
+      "@media (prefers-color-scheme: dark) {\n" &
+      "  pre { background: #2a2a2a; border-left-color: #666; color: #ddd; }\n" &
+      "}\n" &
+      "</style>\n" &
+      "</head>\n<body>\n" & bodyHTML & "\n</body>\n</html>\n"
+    writeFile(filenameHTML, textHTML)
+    return true
+  except:
+    echo "Could not render Markdown into HTML: " & getCurrentExceptionMsg()
+    return false
+
 # Write out help if no valid input is given
 proc writeHelp() =
   echo "=============================================================="
@@ -253,6 +316,7 @@ for kind, key, val in getopt():
           echo "Markdown generated: please review " & filenameMD
         else:
           echo "Failed to produce Markdown"
+          quit(1)
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
@@ -260,7 +324,18 @@ for kind, key, val in getopt():
     of "h":
       try:
         steamid = parseInt(val)
-        echo "Outputting HTML for SteamID (TO BE COMPLETED) ", $steamid
+        echo "Outputting HTML for SteamID ", $steamid
+        var data = grabData()
+        prepareDataDir(dataDirectory)
+        let filenameMD = os.joinPath(dataDirectory, $steamid & "_review.md")
+        let filenameHTML = os.joinPath(dataDirectory, $steamid & "_review.html")
+        if(makeMarkdown(data, filenameMD)):
+          echo "Markdown generated: please review " & filenameMD
+          if(makeHTML(filenameMD, filenameHTML)):
+            echo "Rendered to HTML: " & filenameHTML
+        else:
+          echo "Failed to produce Markdown"
+          quit(1)
         quit(0)
       except ValueError:
         echo "Must enter a valid integer for SteamID"
